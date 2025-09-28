@@ -196,6 +196,7 @@ els, datasets, and hardware configurations, confirms the training
  PipeDream is also 2.6×– 15× faster than model parallelism, up to
  1.9× faster than hybrid parallelism, and 1.7× faster than simpler
  approaches to pipelining such as GPipe’s approach.
+ 我们的评估涵盖了多种深度神经网络模型、数据集及硬件配置的组合，结果验证了PipeDream流水线并行技术对训练时效的提升成效。与数据并行训练相比，PipeDream在多GPU机器上达到目标精度的训练速度显著提升：图像分类任务最高提速5.3倍，机器翻译任务最高提速3.1倍，语言建模任务提速4.3倍，视频描述生成模型提速3倍。相较模型并行方案，PipeDream实现了2.6倍至15倍的加速效果；相比混合并行方案最高提升1.9倍；与GPipe等简易流水线方案相比也获得了1.7倍的性能优势。
 
  2 BACKGROUNDANDRELATEDWORK
  
@@ -205,6 +206,7 @@ els, datasets, and hardware configurations, confirms the training
  cover two broad classes of parallel DNN training: intra- and inter
 batch. We also highlight the challenges posed by DNN model and
  hardware diversity for effective parallelization.
+ 深度神经网络模型由多个按层级结构组织的运算单元构成。在实现DNN训练并行化时，这些网络层可以通过不同方式在可用工作节点上进行划分。本节将系统阐述并行DNN训练的两大基本范式：批内并行与批间并行，并重点分析DNN模型异构性与硬件多样性为高效并行化带来的核心挑战。
 
   2.1 Intra-batch Parallelism
   The most common way to train DNN models today is intra-batch
@@ -217,6 +219,8 @@ nizing weights with other workers, using either collective commu
 nication primitives like all_reduce [24] or parameter servers [38].
  The amountofdata communicated is proportional to the number of
  model weights and the number of workers participating in training.
+ 当前最主流的深度神经网络训练方式是批内并行，即将单次训练迭代的计算过程分配到所有可用工作节点上执行。
+数据并行 是批内并行的典型实现方式：各工作节点在本地维护完整的模型参数副本，并对分配到的输入数据子集进行独立训练，同时通过集体通信原语（如全局归约all_reduce[24]）或参数服务器[38]定期进行权重同步。这种模式下，通信数据量与模型参数量及参与训练的工作节点数量成正比。
 
  The most commonly used form of data parallelism, referred to
  as bulk synchronous parallel or BSP [52]1, requires each worker to
@@ -225,6 +229,7 @@ nication primitives like all_reduce [24] or parameter servers [38].
  as soon as they are available (common in modern frameworks),
  communication stalls are sometimes inevitable for large modelswherethetimeneededtosynchronizegradientsacrossworkers
  candominatecomputationtime.
+目前最常用的数据并行形式被称为批量同步并行（Bulk Synchronous Parallel, BSP）[52]，该方案要求所有工作节点必须相互等待梯度同步完成。尽管现有优化技术（如现代深度学习框架普遍采用的"无等待反向传播"[57]）支持在梯度计算完成后立即发送，但对于大规模模型训练而言，跨节点梯度同步所需时间可能远超计算时间，导致通信阻塞问题仍难以避免。
 
   Figure1quantitativelyshowsthefractionoftrainingtimespent
  incommunicationstallswithdataparallelismfordifferentclassesof
@@ -233,6 +238,7 @@ nication primitives like all_reduce [24] or parameter servers [38].
  4-V100GPUinstanceswithoutNVLinkand10Gbpsinterconnects
  acrossservers,and8-V100GPUinstanceswithNVLinkintercon
 nectswithinserversand25Gbpsinterconnectsacrossservers.
+图1定量展示了在不同类型服务器上，采用数据并行训练各类深度神经网络时通信停滞时间占训练总时长的比例。测试涵盖三种服务器配置：采用PCIe内部互联和25Gbps跨服务器互联的8路1080Ti GPU服务器；未配置NVLink且采用10Gbps跨服务器互联的4路V100 GPU服务器；以及配备NVLink内部互联和25Gbps跨服务器互联的8路V100 GPU服务器。
 
 Wefocusonfourkeytakeaways.First,thecommunicationover
 headformanyofthesemodelsishighdespiteusingmulti-GPU
@@ -252,6 +258,10 @@ headsincreaseforallmodels,eveniftrainingisperformedona
  multi-GPUinstancewithNVLink.Colemanetal.[17]showedsim
 ilarresults.Fourth,asGPUcomputespeedsincrease(1080Tisto
  V100s),communicationoverheadsalsoincreaseforallmodels.
+ 我们主要关注四个关键发现。首先，尽管采用了多GPU服务器及NCCL等先进通信库，多数模型的通信开销依然居高不下。数据并行对ResNet-50等具有紧凑型权重表示的卷积层模型扩展性良好，但对包含LSTM或全连接层等稠密权重结构的模型扩展效果欠佳。
+其次，分布式多GPU服务器应用的瓶颈主要存在于跨服务器低速链路——当训练规模扩展至多服务器时，通信开销会急剧上升并最终达到平台期。这种分层网络架构与数据并行的适配性较差，因为相同数据量需要同时通过高带宽与低带宽信道进行传输。
+第三，随着数据并行节点数量增加，即使采用配备NVLink的多GPU实例进行训练，所有模型的通信开销仍会持续增长，Coleman等人[17]的研究也证实了这一现象。
+第四，随着GPU计算性能升级（从1080Ti到V100），所有模型的通信开销占比均呈现上升趋势。
 
  OtherDPOptimizations.Asynchronousparalleltraining(ASP)
  allowseachworkertoproceedwiththenextinputminibatchbe
@@ -260,6 +270,7 @@ forereceivingthegradients fromthepreviousminibatch.This
  overBSPbyoverlappingcomputationwithcommunication,but
  alsointroducesstalenessandreducesstatisticalefficiency(number
  ofiterationsneededtoreachaparticulartargetaccuracy)[12,20].
+ 其他数据并行优化方案中，异步并行训练允许工作节点在接收前次微批次梯度前即可继续处理后续输入数据。该方法通过计算与通信的重叠执行，在硬件效率（单次迭代耗时）上优于批量同步并行方案，但会引发梯度延迟问题，导致统计效率（达到目标精度所需迭代次数）下降[12,20]。
 
  Seideetal.[45,46]lookedatquantizinggradientstodecrease
  theamountofdataneededtobecommunicatedoverthenetwork.
@@ -271,6 +282,8 @@ turetoreducetheoverheadofcommunication[9,24,50,51],oftenusinghighlyspecializedne
 plementarytothesetechniquesandfocusesmainlyonimproving
  theperformanceofparallelDNNtrainingwhenusingcommodity
  acceleratorsandinterconnectsavailableinpublicclouds.
+  acceleratorsandinterconnectsavailableinpublicclouds.翻译
+Seide等人[45,46]提出了梯度量化方案以减少网络传输数据量。这种近似优化策略在特定场景下有效但缺乏普适性：虽然对某些语音模型不会影响收敛效果[47]，但尚未证明适用于其他类型模型。另有研究借鉴高性能计算领域的技术方案[9,24,50,51]来降低通信开销，这些方案通常依赖专用网络硬件。我们的工作与这些技术形成互补，主要致力于在公有云通用加速器与互联设备条件下提升并行DNN训练性能。
 
  Recentworkhasdemonstratedthatusinglargeminibatchesis
  effectivefortrainingResNet-50,especiallywhencombinedwith
@@ -279,6 +292,7 @@ batchesreducethecommunicationoverheadbyexchangingpa
 rameterslessfrequently;however,ourexperimentsshowthatsuch
  techniqueslackgeneralitybeyondResNet-50andpipelineparal
 lelismcanoutperformthefastestLARSdata-paralleloption.
+近期研究表明，采用大型微批次结合层自适应速率缩放技术能有效训练ResNet-50模型[24,31,56]。大型微批次通过降低参数交换频率来减少通信开销，但我们的实验表明，此类技术对ResNet-50之外的其他模型缺乏普适性，而流水线并行方案的性能表现可超越最快的LARS数据并行方案。
 
 ModelParallelism.Modelparallelismisanintra-batchparallelism
  approachwheretheoperators inaDNNmodelarepartitioned
@@ -287,6 +301,7 @@ ModelParallelism.Modelparallelismisanintra-batchparallelism
  forall inputs.Theamountofdatacommunicatedisthesizeof
  intermediateoutputs(andcorrespondinggradients)thatneedto
  besentacrossworkers.
+ 模型并行作为批内并行的一种实现方式，其核心在于将深度神经网络中的运算单元划分至不同工作节点，每个节点仅针对所有输入数据计算并更新模型参数的特定子集。该方案下，通信数据量取决于需要在工作节点间传输的中间结果（及其对应梯度）的规模。
 
  Althoughmodelparallelismenablestrainingofverylargemod
 els, vanillamodelparallelismisrarelyusedtoaccelerateDNN
@@ -296,6 +311,7 @@ paralleltrainingresultsinunder-utilizationofcomputeresources,
  consecutivelayers; inthisregime,theintermediateoutputs(activa
 tionsandgradients)betweenthesegroupsaretheonlydatathat
  needtobecommunicatedacrossworkers.2
+ 尽管模型并行技术能够支持超大规模模型的训练，但其原始形态却鲜少用于加速深度神经网络训练，主要存在两大局限性。首先，如图2所示，模型并行会导致计算资源利用率不足：每个工作节点负责处理连续层组时，仅需在节点间传输层组间的中间数据（激活值与梯度），这种机制使得大部分计算单元处于间歇性空闲状态。
 
  Thesecondlimitationformodel-parallel trainingisthat the
  burdenofpartitioningamodel acrossmultipleGPUs is left to
@@ -307,6 +323,7 @@ minedeviceplacementformodelparallelism[42].However,these
  pipelineconsistingofgroupsofconsecutivelayers–theseassump
 tionsmaketheoptimizationproblemmoretractable,allowingfor
  exactsolutionsinpolynomialtimeasweshowin§3.1.
+ 模型并行训练的第二项局限在于，跨多GPU的模型划分工作完全依赖于人工实现[36]，导致解决方案高度定制化。近期研究尝试采用强化学习自动确定模型并行的设备布局[42]，但这类技术存在时间和资源消耗大的问题，且未能充分利用深度神经网络训练可视为连续层组构成计算流水线的特性——正如我们在3.1节所论证的，基于该特性可将优化问题转化为多项式时间内可解的规整形式。
 
   HybridIntra-batchParallelism.Recentworkhasproposedsplit
 tingasingleiterationoftheoptimizationalgorithmamongmultiple
@@ -320,3 +337,4 @@ tingasingleiterationoftheoptimizationalgorithmamongmultiple
 matedway.However,FlexFlowdoesnotperformpipelining,and
  weshowinourexperiments(§5.3)thatthisleavesasmuchas90%
  ofperformanceonthetable.
+ 混合批内并行 的最新研究提出了沿多个维度拆分单次迭代的优化方案。OWT[36]通过人工方式对当时主流的AlexNet模型进行划分：对参数量少但输出量大的卷积层采用数据并行，而对参数量庞大的全连接层则不进行复制。该方案未采用流水线技术。FlexFlow[33]提出了沿样本、算子、特征和参数四个维度拆分单次迭代的方法，并设计了自动化划分算法。然而FlexFlow同样未实现流水线并行，我们的实验（§5.3）表明这种缺失会导致高达90%的性能潜力未被释放。
