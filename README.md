@@ -312,7 +312,8 @@ paralleltrainingresultsinunder-utilizationofcomputeresources,
 tionsandgradients)betweenthesegroupsaretheonlydatathat
  needtobecommunicatedacrossworkers.2
  尽管模型并行技术能够支持超大规模模型的训练，但其原始形态却鲜少用于加速深度神经网络训练，主要存在两大局限性。首先，如图2所示，模型并行会导致计算资源利用率不足：每个工作节点负责处理连续层组时，仅需在节点间传输层组间的中间数据（激活值与梯度），这种机制使得大部分计算单元处于间歇性空闲状态。
-<img width="413" height="173" alt="image" src="https://github.com/user-attachments/assets/f18754e5-8491-43fe-9f17-34ff1695954f" />
+<img width="415" height="259" alt="image" src="https://github.com/user-attachments/assets/46f4e2f0-d953-4cc9-adcc-0e369d46727b" />
+
 
  Thesecondlimitationformodel-parallel trainingisthat the
  burdenofpartitioningamodel acrossmultipleGPUs is left to
