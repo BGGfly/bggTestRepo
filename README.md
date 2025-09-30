@@ -340,3 +340,242 @@ matedway.However,FlexFlowdoesnotperformpipelining,and
  weshowinourexperiments(§5.3)thatthisleavesasmuchas90%
  ofperformanceonthetable.
  混合批内并行 的最新研究提出了沿多个维度拆分单次迭代的优化方案。OWT[36]通过人工方式对当时主流的AlexNet模型进行划分：对参数量少但输出量大的卷积层采用数据并行，而对参数量庞大的全连接层则不进行复制。该方案未采用流水线技术。FlexFlow[33]提出了沿样本、算子、特征和参数四个维度拆分单次迭代的方法，并设计了自动化划分算法。然而FlexFlow同样未实现流水线并行，我们的实验（§5.3）表明这种缺失会导致高达90%的性能潜力未被释放。
+
+ 2.2 Inter-batchParallelism
+
+ Chenetal.[15]brieflyexploredthepotentialbenefitsofpipelin
+ingminibatchesinmodel-paralleltraining,butdonotaddressthe
+ conditionsforgoodstatisticalefficiency,scale,andgeneralityas
+ applicabletolargereal-worldmodels.Huoetal.[29]exploredpar
+allelizingthebackwardpassduringtraining.Ourproposedsolution
+ parallelizesboththeforwardandbackwardpass.
+ GPipe(concurrentworkwithanearlierPipeDreampreprint[25])
+ usespipelininginthecontextofmodel-paralleltrainingforvery
+ largemodels[28].GPipedoesnotspecifyanalgorithmforparti
+tioningamodel,butassumesapartitionedmodelasinput.GPipe
+ furthersplitsaminibatchintommicrobatches,andperformsfor
+wardpassesfollowedbybackwardpassesforthesemmicrobatches
+ (seeFigure3,m=4).Withafocusontrainingalargemodellike
+ AmoebaNet,GPipeoptimizesformemoryefficiency;itusesexisting
+ techniquessuchasweightgradientaggregationandtradescom
+putationformemorybydiscardingactivationstashesbetweenthe
+ forwardandthebackwardpass,insteadoptingtore-computethem
+ whenneededinthebackwardpass[14].Asaresult, itcansuffer
+ fromreducedhardwareefficiencyduetore-computationoverheads
+ andfrequentpipelineflushesifmissmall(§5.4).
+ Incomparison,PipeDreamaddresseskeyissuesignoredinprior
+ work,offeringageneralsolutionthatkeepsworkerswellutilized,
+ combiningpipeliningwithintra-batchparallelisminaprincipled
+ way,whilealsoautomatingthepartitioningofthemodelacross
+ theavailableworkers
+Chen等人[15]曾简要探讨过在模型并行训练中采用微批次流水线处理的潜在优势，但未就统计效率、扩展性及普适性等关键条件进行深入分析，这些条件对于大型实际应用的模型至关重要。Huo等人[29]则研究了训练过程中反向传播的并行化。我们提出的解决方案实现了前向传播与反向传播的双重并行。
+GPipe（与PipeDream预印本[25]前期研究同步的并行工作）在超大规模模型的模型并行训练中采用了流水线技术[28]。GPipe未提供模型划分的具体算法，而是以已划分的模型作为输入。该框架进一步将微批次划分为m个子微批次，并依次执行这些子微批次的前向传播与反向传播（如图3所示，m=4）。针对如AmoebaNet等大型模型的训练，GPipe以内存效率为优化目标：它采用权重梯度聚合等现有技术，并通过在前向与反向传播间丢弃激活值缓存（选择在反向传播需要时重新计算[14]），以计算资源换取内存空间。这导致当m值较小时，可能因重新计算开销和频繁的流水线刷新而降低硬件效率（参见5.4节）。
+相较而言，PipeDream解决了前人工作中忽视的关键问题，提供了一种通用解决方案：通过原则性方法将流水线与批内并行相结合，保持工作节点的高效利用率，同时实现了模型在可用工作节点间的自动划分。
+<img width="400" height="230" alt="image" src="https://github.com/user-attachments/assets/28baf95a-6bca-4b0d-bd03-1c4d1a9c4b1e" />
+
+  2.3 DNNModelandHardwareDiversity
+
+   DNNmodelsarediverse,withconvolutional layers,LSTMs[55],
+ attentionlayers[53],andfully-connectedlayerscommonlyused.
+ Thesedifferenttypesofmodelsexhibitvastlydifferentperformance
+ characteristicswithdifferentparallelizationstrategies,makingthe
+ optimalparallelizationstrategyhighlymodel-dependent.
+ 神经网络模型种类繁多，常包含卷积层、长短期记忆网络[55]、注意力层[53]以及全连接层等不同组件。这些不同类型的模型在使用不同并行化策略时，会表现出截然不同的性能特征，因此最优的并行化策略高度依赖于具体模型结构。
+
+  Pickinganoptimalparallelizationschemeischallengingbecause
+ theefficacyofsuchaschemedependsonthecharacteristicsof
+ thetargetdeploymenthardwareaswell;GPUs,ASICs,andFPGAs
+ haveverydifferentcomputecapabilities.Moreover, interconnects
+ linkingtheseacceleratorshavedifferenttopologiesandcapacities;
+ cloudserversarelinkedbytensto100Gbpsnetworks,accelera
+torswithinserversmightbeconnectedoversharedPCIetrees(10
+ to15GBps),andspecializedexpensiveservers,suchastheDGX
+1[23],useNVLinkwithpoint-to-point30GBpsbandwidthcapabili
+ties.Thisdiversityinmodelsanddeploymentsmakesitextremely
+ hardtomanuallycomeupwithanoptimalparallelizationstrategy.
+ PipeDreamautomatesthisprocess,aswediscussin§3.1.
+选择最优并行化方案具有挑战性，因为方案的成效还取决于目标部署硬件的特性：GPU、ASIC和FPGA具有截然不同的计算能力。此外，连接这些加速器的互联网络也存在不同的拓扑结构与带宽容量——云服务器通过数十至100Gbps网络相连，服务器内部加速器可能通过共享PCIe树状总线连接（10至15GB/s），而像DGX-1[23]这类专业高端服务器则采用点对点NVLink技术，具备30GB/s的带宽能力。模型与部署环境的这种多样性，使得人工制定最优并行化策略变得极为困难。正如我们将在3.1节讨论的，PipeDream实现了这一过程的自动化。
+
+
+ 3 PIPELINEPARALLELISM
+
+  PipeDreamusespipelineparallelism(PP), anewparallelization
+ strategythatcombines intra-batchparallelismwithinter-batch
+ parallelism.Pipeline-parallel computationinvolvespartitioning
+ thelayersofaDNNmodelintomultiplestages,whereeachstage
+ consistsofaconsecutivesetoflayersinthemodel.Eachstageis
+ mappedtoaseparateGPUthatperformstheforwardpass(and
+ backwardpass)foralllayersinthatstage.3
+ PipeDream采用流水线并行这一新型并行策略，该策略将批内并行与批间并行相结合。流水线并行计算涉及将DNN模型的层划分成多个阶段，每个阶段由模型中连续的若干层组成。每个阶段被分配到独立的GPU上执行，由该GPU负责该阶段内所有层的前向传播（及反向传播）计算³。
+
+ Inthesimplestcase,onlyoneminibatchisactiveinthesystem,
+ asintraditionalmodel-paralleltraining(Figure2);inthissetup,at
+ mostoneGPUisactiveatatime.Ideally,wewouldlikeallGPUsto
+ beactive.Withthisinmind,weinjectmultipleminibatchesintothe
+ pipelineoneaftertheother.Oncompletingitsforwardpassfora
+ minibatch,eachstageasynchronouslysendstheoutputactivations to the next stage, while simultaneously starting to process another
+ minibatch. The last stage starts the backward pass on a minibatch
+ immediately after the forward pass completes. On completing its
+ backward pass, each stage asynchronously sends the gradient to the
+ previous stage while starting computation for the next minibatch
+ (Figure 4).
+ 在最简单的情况下，如传统模型并行训练（图2）所示，系统中仅有一个微批次处于处理状态；在这种配置下，同一时间最多只有一个GPU处于活跃状态。理想情况下，我们希望所有GPU都能保持持续活跃。基于此目标，我们采用连续向流水线注入多个微批次的方式：当某个阶段完成对当前微批次的前向传播后，会异步将输出激活值传递给下一阶段，同时立即开始处理另一个微批次；最后一个阶段在前向传播结束后即刻启动该微批次的反向传播；而当每个阶段完成其反向传播计算时，会异步将梯度传递给前序阶段，同时开始处理下一个微批次的计算任务（图4）。
+ <img width="400" height="243" alt="image" src="https://github.com/user-attachments/assets/fb6695f8-7f6d-4df7-ac82-423be1cc3018" />
+
+ Pipeline parallelism canoutperformintra-batchparallelismmeth
+ods for two reasons:
+ Pipelining communicates less. PP often can communicate far
+ less than DP. Instead of having to aggregate gradients for all param
+eters and send the result to all workers, as is done in data-parallel
+ approaches (using either collective communication or a parameter
+ server), each worker in a PP execution has to communicate only
+ subsets of the gradients and output activations, to only a single
+ other worker. This can result in large reductions in communication
+ for some models (e.g., >85% reduction for VGG-16, AWD LM).
+ Pipelining overlaps computation and communication. Asyn
+chronous communication of forward activations and backward
+ gradients across stages results in significant overlap of communica
+tion with the computation of a subsequent minibatch, as shown in
+ Figure 5. This computation andcommunicationarecompletelyinde
+pendent with no dependency edges, since they operate on different
+ inputs, leading to easier parallelization.
+ However, to realize the opportunity of PP, PipeDream must over
+comethree challenges. In discussing PipeDream’s solutions to these
+ challenges, we will refer to Figure 6, which shows PipeDream’s
+ high-level workflow.流水线并行技术能够超越批内并行方法，主要基于两个关键原因：
+
+流水线通信量更少
+相比数据并行方法需要聚合所有参数的梯度并将结果发送给所有工作节点（无论采用集体通信或参数服务器架构），流水线并行中的每个工作节点仅需将部分梯度和输出激活值传递给单个相邻节点。这种通信模式可为某些模型大幅降低通信开销（例如VGG-16和AWD LM模型的通信量减少超过85%）。
+
+流水线实现计算通信重叠
+如图5所示，阶段间前向激活值与反向梯度的异步通信机制，使得通信操作与后续微批次的计算任务实现显著重叠。由于这些操作处理的是不同的输入数据，它们之间不存在依赖关系，这种完全独立性使得并行化更易实现。
+<img width="424" height="485" alt="image" src="https://github.com/user-attachments/assets/b4fa17e5-fa7e-4a20-aefa-268b02c4a19e" />
+
+然而，要充分发挥流水线并行的潜力，PipeDream必须解决三大挑战。在探讨其解决方案时，我们将参考图6所示的PipeDream高层工作流程。
+<img width="402" height="383" alt="image" src="https://github.com/user-attachments/assets/8adafee3-95ba-47ed-8e1c-e22700838eae" />
+
+ 3.1 Challenge 1: Work Partitioning
+
+  PipeDream treats model training as a computation pipeline, with
+ each worker executing a subset of the model as a stage. Like with
+ any pipeline, the steady state throughput of the resulting pipeline
+ is the throughput of the slowest stage. Having each stage process
+ minibatches at vastly different throughputs can lead to bubbles in the pipeline, starving faster stages of minibatches to work on and
+ resulting in resource under-utilization. Excessive communication
+ between workers can also lower the throughput of the training
+ pipeline. Moreover, the allocation of stages to workers needs to
+ be model- and hardware-aware to be effective, and there may be
+ cases where no simple partitioning across the GPUs achieves both
+ limited communication and perfect load balance.
+ PipeDream将模型训练视为一个计算流水线，每个工作节点作为独立阶段执行模型的子集。与所有流水线系统类似，最终流水线的稳定状态吞吐量取决于最慢阶段的处理速度。当各阶段处理微批次的吞吐量差异过大时，会导致流水线中出现"气泡"现象，使快速阶段因缺乏待处理数据而空闲，进而造成资源利用率不足。此外，工作节点间过度的通信也会降低训练流水线的整体吞吐量。更重要的是，阶段分配到工作节点的过程需要同时考虑模型特性与硬件拓扑才能实现最优效果，在某些情况下可能无法找到既保证有限通信又实现完美负载均衡的简单GPU划分方案。
+
+  Solution: PipeDream’s optimizer outputs a balanced pipeline.
+ Its algorithm partitions DNN layers into stages such that each stage
+ completes at roughly the same rate, while trying to minimize com
+munication across workers in a topology-aware way (for example,
+ large outputs should be sent over higher bandwidth links if possi
+ble). To further improve load balancing, PipeDream goes beyond
+ straight pipelines, allowing a stage to be replicated (i.e., data paral
+lelism is used on the stage). This partitioning problem is equivalent
+ to minimizing the time taken by the slowest stage of the pipeline,
+ and has the optimal sub-problem property: a pipeline that maximizes
+ throughput given a worker count is composed of sub-pipelines that
+ maximize throughput for smaller worker counts. Consequently, we
+ use dynamic programming to find the optimal solution.
+ 解决方案：PipeDream优化器可生成均衡的流水线配置。其算法将DNN层划分为若干阶段，确保每个阶段的处理速率基本一致，同时以拓扑感知的方式尽可能减少工作节点间的通信（例如，大型输出数据应优先通过高带宽链路传输）。为进一步优化负载均衡，PipeDream突破了传统直线流水线的限制，支持阶段复制（即在特定阶段采用数据并行技术）。该划分问题本质上等价于最小化流水线最慢阶段的处理时间，且具有最优子问题特性：在给定工作节点数条件下实现最大吞吐量的流水线，必然由较少数节点下实现最大吞吐量的子流水线构成。因此，我们采用动态规划算法来寻找最优划分方案。
+
+  PipeDream exploits the fact that DNN training shows little vari
+ance in computation time across inputs. PipeDream records the
+ computation time taken by the forward and backward pass, the size
+ of the layer outputs, and the size of the associated parameters for
+ each layer as part of an initial profiling step; this profile is used as
+ the input to the optimizer’s partitioning algorithm (Figure 6). The
+ partitioning algorithm also takes into account other constraints
+ such as hardware topology and bandwidth, number of workers, and
+ memory capacity of the compute devices.
+
+  Profiler. PipeDream records three quantities for each layer l, using
+ a short (few minutes) profiling run of 1000 minibatches on a single
+ GPU: 1) Tl, the total computation time across the forward and
+ backward passes for layer l on the target GPU, 2) al, the size of the
+ output activations of layer l (and the size of input gradients in the
+ backward pass) in bytes, and 3) wl, the size of weight parameters
+ for layer l in bytes.
+ PipeDream利用了深度学习训练在不同输入间计算时间差异极小的特性。在初始性能分析阶段，系统会记录每个层的前向传播与反向传播计算时间、层输出数据大小及相关参数规模，这些分析数据将作为优化器划分算法的输入（图6）。该划分算法同时会综合考虑硬件拓扑结构、带宽资源、工作节点数量以及计算设备内存容量等其他约束条件。
+
+  PipeDream estimates the communication time by dividing the
+ amount of data that needs to be transferred by the network band
+width of the communication link. Assuming efficient all_reduce
+ collective communication, in data-parallel configurations with m
+ workers, each worker sends (m−1
+ m · |wl |) bytes to other workers,
+ and receives the same amount; this is used to estimate the time
+ for weight synchronization for layer l when using data parallelism
+ withm workers.
+ PipeDream通过待传输数据量除以通信链路的网络带宽来估算通信时间。在采用高效全归约集体通信的前提下，对于包含m个工作节点的数据并行配置，每个工作节点需要向其他节点发送（(m-1)/m · |wl|）字节的数据，并接收等量数据。该计算模型被用于估算在使用m个工作节点进行数据并行时，第l层的权重同步所需时间。
+
+  Partitioning Algorithm. Our partitioning algorithm takes the
+ output of the profiling step, and computes: 1) a partitioning of
+ layers into stages, 2) the replication factor (number of workers) for
+ each stage, and 3) optimal number of in-flight minibatches to keep
+ the training pipeline busy.
+ 划分算法。我们的划分算法以性能分析数据作为输入，计算出三个关键要素：1）将网络层划分至各阶段的方案；2）每个阶段的复制因子（即工作节点数量）；3）维持训练流水线持续饱和所需的最优并行微批次数量。
+
+  PipeDream’s optimizer assumes that the machine topology is
+ hierarchical and can be organized into levels, as shown in Figure 7.
+ Bandwidths within a level are the same, while bandwidths across
+ levels are different. We assume that level k is comprised of mk
+ components of level (k − 1), connected by links of bandwidth Bk.
+ In Figure 7,m2 = 2 andm1 = 4. In addition, we definem0 to be 1;
+m0representsthenumberofcomputedeviceswithinthefirstlevel
+ (solidgreenboxesinFigure7).
+ PipeDream优化器采用层级化机器拓扑结构，如图7所示，该结构可被组织为多个层级。同一层级内的带宽保持一致，而跨层级间的带宽则存在差异。我们假设第k层级由m_k个第(k-1)层组件构成，这些组件通过带宽为B_k的链路相互连接。在图7示例中，m_2=2且m_1=4。此外，我们定义m_0=1，其中m_0表示第一层级内的计算设备数量（对应图7中实线绿框所标示的单元）。
+
+ PipeDream’soptimizersolvesdynamicprogrammingproblems
+ progressivelyfromthelowesttothehighestlevel.Intuitively,this
+ processfindstheoptimalpartitioningwithinaserverandthenuses
+ thesepartitionstosplitamodeloptimallyacrossservers.
+ Notation.LetAk(i→j,m)denotethetimetakenbytheslowest
+ stageintheoptimalpipelinebetweenlayersiandjusingmworkers
+ atlevelk.ThegoalofouralgorithmistofindAL(0→N,mL),and
+ thecorrespondingpartitioning,whereListhehighestlevelandN
+ isthetotalnumberoflayersinthemodel.
+ LetTk(i→j,m)denotethetotaltimetakenbyasinglestage
+ spanninglayersi throughj forbothforwardandbackwardpasses,
+ replicatedovermworkersusingbandwidthBk.
+ <img width="379" height="88" alt="image" src="https://github.com/user-attachments/assets/b9f11894-f138-4b92-a364-3778290222e2" />
+PipeDream优化器采用自底向上的动态规划求解方法。直观来看，该过程首先在服务器内部寻找最优划分方案，继而利用这些划分实现跨服务器的模型最优分割。
+
+符号体系
+设Aₖ(i→j, m)表示在第k层级使用m个工作节点时，层i至层j间最优流水线中最慢阶段的执行时间。本算法的核心目标是求解A_L(0→N, m_L)及其对应划分方案，其中L代表最高层级，N表示模型总层数。
+令Tₖ(i→j, m)表示跨越层i至层j的单一阶段在前向与反向传播中的总执行时间，该阶段通过带宽Bₖ在m个工作节点上进行复制。
+
+wherethefirstterminsidethemaxisthetotalcomputationtime
+ forallthelayersinthestageusinglevelk−1asthecomputation
+ substrate,andthesecondtermisthetimefordata-parallelcom
+municationamongall layersinthestage.Theresultofthemax
+ expressionabovegivestheeffectivetimespentprocessingmin
+putswhileperformingcomputeandcommunicationconcurrently;
+ thus,theeffectivetimespentprocessingasingleinputisthisterm
+ dividedbym.
+ Theoptimalpipelinecannowbebrokenintoanoptimalsub
+pipelineconsistingoflayersfrom1throughswithm−m′workers
+ followedbyasinglestagewithlayerss+1throughj replicated
+ overm′workers.Then,usingtheoptimalsub-problemproperty,
+ wehave
+ <img width="392" height="69" alt="image" src="https://github.com/user-attachments/assets/ac187dd9-8b97-4436-9961-f7db56e45419" />
+其中，max函数内的首项代表该阶段所有层在以第k-1层级为计算基底时的总计算时间，次项则表示该阶段内所有层进行数据并行通信所需的时间。该max表达式的结果给出了在并发执行计算与通信时处理单个输入的有效时间，因此处理单个输入的实际有效时间需将此结果除以m。
+
+根据最优子问题特性，最优流水线可拆分为两个部分：由层1至层s组成、使用m-m'个工作节点的最优子流水线，后接一个跨越层s+1至层j、在m'个工作节点上复制的独立阶段。由此可得：
+
+  stageoftheoptimalsub-pipelinebetweenlayersiandswithm−m′
+ workers, thesecondtermisthetimetakentocommunicatethe
+ activationsandgradientsofsizeasbetweenlayerssands+1,and
+ thethirdtermisthetimetakenbythesinglestagecontaininglayers
+ s+1toj inadata-parallelconfigurationofm′workers.
+
+Whensolvingforlevelk,weuseAk−1(i→j,mk−1),whichis
+ theoptimal totalcomputationtimefor layersi throughjusing
+ allworkersavailableinasinglecomponentat level (k−1) (in
+
+
